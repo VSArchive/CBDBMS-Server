@@ -1,0 +1,5 @@
+secure-smtplib
+pymongo
+flask
+python-dotenv
+gunicorn
