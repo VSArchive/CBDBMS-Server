@@ -25,17 +25,23 @@ transaction_request_db = db.transaction_request
 app = Flask(__name__)
 
 
-def mail(amount, child_details):
+def mail(amount, child_details, status="approved"):
     sender_address = os.getenv("SMTP_EMAIL")
     sender_pass = os.getenv("SMTP_PASS")
 
-    mail_content = "Your transaction of " + str(amount) + " has been approved by the parent.\n\n"
+    if status == "approved":
+        subject = "Transaction Approved"
+        mail_content = "Your transaction of {} has been approved".format(
+            amount)
+    else:
+        subject = "Transaction Denied"
+        mail_content = "Your transaction of {} has been denied".format(
+            amount)
 
     message = MIMEMultipart()
     message['From'] = sender_address
     message['To'] = child_details["email"]
-    message['Subject'] = 'Approve transaction amount of ' + \
-        str(amount) + "by" + child_details["name"]
+    message['Subject'] = subject
     message.attach(MIMEText(mail_content, 'plain'))
 
     session = smtplib.SMTP('smtp.gmail.com', 587)
@@ -51,61 +57,55 @@ def approve_child_transaction(transaction_request_id):
         transaction_request = transaction_request_db.find_one(
             {"transaction_request_id": transaction_request_id})
 
-        if transaction_request["type"] == "deposit":
-            child_deposit(transaction_request["account_number"],
-                          transaction_request["amount"])
-            transaction_request_db.delete_one(
-                {"transaction_request_id": transaction_request_id})
-            return True, "transaction success"
+        if bool(transaction_request):
+            if transaction_request["type"] == "deposit":
+                child_deposit(transaction_request["child_account_number"],
+                              transaction_request["amount"])
+                transaction_request_db.delete_one(
+                    {"transaction_request_id": transaction_request_id})
+                return True, "transaction success"
 
-        child_details = child_db.find_one(
-            {"username": transaction_request["child_username"], "account_number": transaction_request["child_account_number"]})
-        balance_update = {"$set": {"balance": int(
-            child_details["balance"]) - transaction_request["amount"]}}
-        child_db.update_one(
-            {"username": transaction_request["child_username"], "account_number": transaction_request["child_account_number"]}, balance_update)
-
-        transaction_db.create_index("transaction_id", unique=True)
-        transaction_details = {
-            "username": transaction_request["child_username"],
-            "transaction_id": randint(1, 1000000000000),
-            "transactionAt": datetime.now(),
-            "amount": transaction_request["amount"],
-            "from_account_number": transaction_request["child_account_number"],
-            "to_account_number": transaction_request["toAcc"],
-            "by_type": "child",
-            "to_type": "child",
-            "transaction_type": "1to1",
-            "approved_by": transaction_request["parent_account_number"],
-            "message": "Approved by parent via link"
-        }
-        transaction_db.insert_one(transaction_details)
-
-        child_details = child_db.find_one(
-            {"account_number": transaction_request["toAcc"]})
-        if bool(child_details):
-            balance_update = {
-                "$set": {"balance": child_details["balance"] + transaction_request["amount"]}}
+            child_details = child_db.find_one(
+                {"username": transaction_request["child_username"], "account_number": transaction_request["child_account_number"]})
+            balance_update = {"$set": {"balance": int(
+                child_details["balance"]) - transaction_request["amount"]}}
             child_db.update_one(
-                {"username": child_details["username"], "account_number": transaction_request["toAcc"]}, balance_update)
+                {"username": transaction_request["child_username"], "account_number": transaction_request["child_account_number"]}, balance_update)
 
-            transaction_request_db.delete_one(
-                {"transaction_request_id": int(transaction_request_id)})
+            transaction_db.create_index("transaction_id", unique=True)
+            transaction_details = {
+                "username": transaction_request["child_username"],
+                "transaction_id": randint(1, 1000000000000),
+                "transactionAt": datetime.now(),
+                "amount": transaction_request["amount"],
+                "from_account_number": transaction_request["child_account_number"],
+                "to_account_number": transaction_request["toAcc"],
+                "by_type": "child",
+                "to_type": "child",
+                "transaction_type": "1to1",
+                "approved_by": transaction_request["parent_account_number"],
+                "message": "Approved by parent via link"
+            }
+            transaction_db.insert_one(transaction_details)
 
-            parent_details = parent_db.find_one(
-                {"account_number": child_details["parent_account_number"]})
-
-            child_to_details = child_db.find_one(
+            child_details = child_db.find_one(
                 {"account_number": transaction_request["toAcc"]})
+            if bool(child_details):
+                balance_update = {
+                    "$set": {"balance": child_details["balance"] + transaction_request["amount"]}}
+                child_db.update_one(
+                    {"username": child_details["username"], "account_number": transaction_request["toAcc"]}, balance_update)
 
-            mail(parent_details, child_to_details, transaction_request["toAcc"],
-                 child_details, transaction_request_id)
-            return True, "transaction success"
+                transaction_request_db.delete_one(
+                    {"transaction_request_id": int(transaction_request_id)})
+
+                mail(transaction_request["amount"], child_details)
+                return True, "transaction success"
         else:
             return False, "account dose not exist"
 
     except Exception as e:
-        print(e)
+        print(e.with_traceback())
         return False, e
 
 
@@ -139,9 +139,29 @@ def child_deposit(account_number, amount):
             child_db.update_one(
                 {"username": child_details["username"]}, balance_update)
 
+            mail(amount, child_details)
+
             return True, "transaction success"
         else:
             return False, "account dose not exist"
+    except Exception as e:
+        print(e)
+        return False, e
+
+
+def deny_child_transaction(transaction_request_id):
+    try:
+        transaction_request = transaction_request_db.find_one(
+            {"transaction_request_id": transaction_request_id})
+
+        child_details = child_db.find_one(
+            {"username": transaction_request["child_username"], "account_number": transaction_request["child_account_number"]})
+
+        transaction_request_db.delete_one(
+            {"transaction_request_id": transaction_request_id})
+
+        mail(transaction_request["amount"], child_details, "deny")
+        return True, "transaction denied"
     except Exception as e:
         print(e)
         return False, e
@@ -157,6 +177,15 @@ def approve(id):
     success, _ = approve_child_transaction(id)
     if success:
         return "<p>Transaction Approved Successfully: {}</p>".format(id)
+    else:
+        return "<p>Transaction Already Approved or dose not exists: {}</p>".format(id)
+
+
+@app.route("/deny/<int:id>")
+def deny(id):
+    success, _ = deny_child_transaction(id)
+    if success:
+        return "<p>Transaction has been denied Successfully: {}</p>".format(id)
     else:
         return "<p>Transaction Already Approved or dose not exists: {}</p>".format(id)
 
