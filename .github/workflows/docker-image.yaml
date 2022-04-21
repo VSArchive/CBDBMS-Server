@@ -34,5 +34,5 @@ jobs:
         with:
           platforms: linux/amd64, linux/arm64
           push: true
-          tags: ghcr.io/vineelsai26/sandbox:latest
+          tags: ghcr.io/vineelsai26/cbdbms-server:latest
           file: ./Dockerfile
